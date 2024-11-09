@@ -1,5 +1,6 @@
 from ast import arg
 from html import parser
+from re import sub
 import h5py
 import numpy as np
 import matplotlib.pyplot as plt
@@ -90,8 +91,18 @@ df["final_description"] = (
     + df["description"]
 )
 
-df["category"] = df["category"].apply(
-    lambda x: x.decode("utf-8", errors="replace").replace("\ufffd", "").lower()
-)
+byte_columns = [
+    "pose",
+    "description",
+    "sub_category",
+    "category",
+    "gender",
+    "final_description",
+]
+
+for column in byte_columns:
+    df[column] = df[column].apply(
+        lambda x: x.decode("utf-8", errors="replace").replace("\ufffd", "").lower()
+    )
 
 df.to_pickle(output_path)
