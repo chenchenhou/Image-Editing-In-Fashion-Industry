@@ -14,16 +14,16 @@ import os
 def get_parser():
     parser = argparse.ArgumentParser(description="Data Preprocessing")
     parser.add_argument(
-        "--data_path",
+        "--input_path",
         type=str,
         default="data/fashiongen_256_256_train.h5",
-        help="Path to the data file",
+        help="Path to the h5 data file",
     )
     parser.add_argument(
         "--output_path",
         type=str,
         required=True,
-        help="Path to the output image directory",
+        help="Path to the output pickle file",
     )
     return parser
 
@@ -31,7 +31,7 @@ def get_parser():
 parser = get_parser()
 args = parser.parse_args()
 output_path = args.output_path
-file_path = args.data_path
+file_path = args.input_path
 
 description = []
 pose = []
