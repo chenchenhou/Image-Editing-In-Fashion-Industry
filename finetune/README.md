@@ -1,4 +1,4 @@
-# This folder contains the code I use for fine-tuning SDXL-Turbo
+# This folder contains the code for fine-tuning SDXL-Turbo
 
 **Important**
 
