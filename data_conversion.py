@@ -52,7 +52,7 @@ if not os.path.exists(output_image_path):
 df = pd.read_pickle(input_path)
 
 data_for_finetuning = []
-data_for_image_editing = []
+data_for_image_editing = {}
 
 for idx, row in df.iterrows():
     print(f"Processing {idx+1}/{len(df)}")
@@ -90,15 +90,20 @@ for idx, row in df.iterrows():
         }
     )
 
-    data_for_image_editing.append(
-        {
-            src_image_filename: {
-                "src_prompt": src_description,
-                "target_image": target_image_filename,
-                "tgt_prompt": target_description,
-            }
-        }
-    )
+    data_for_image_editing[src_image_filename] = {
+        "src_prompt": src_description,
+        "target_image": target_image_filename,
+        "tgt_prompt": target_description,
+    }
+    # data_for_image_editing.append(
+    #     {
+    #         src_image_filename: {
+    #             "src_prompt": src_description,
+    #             "target_image": target_image_filename,
+    #             "tgt_prompt": target_description,
+    #         }
+    #     }
+    # )
 
 with open(output_finetune_json_path, "w", encoding="utf-8") as f:
     json.dump(data_for_finetuning, f, indent=4)
