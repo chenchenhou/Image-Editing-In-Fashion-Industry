@@ -16,10 +16,113 @@ from functools import partial
 from utils import SAMPLING_DEVICE, get_ddpm_inversion_scheduler, create_xts, device
 from config import get_config
 import argparse
+from torch.optim import AdamW
+from torch.utils.data import DataLoader
+from transformers import AutoTokenizer, get_scheduler
+from diffusers import UNet2DConditionModel, AutoencoderKL
+from datasets import load_dataset
+from torchvision import transforms
+import numpy as np
 
 
 VAE_SAMPLE = "argmax"  # "argmax" or "sample"
 RESIZE_TYPE = None  # Image.LANCZOS
+
+
+class ImageEditingDataset(torch.utils.data.Dataset):
+    def __init__(self, data_list, tokenizer, image_transform):
+        self.data_list = data_list
+        self.tokenizer = tokenizer
+        self.image_transform = image_transform
+
+    def __len__(self):
+        return len(self.data_list)
+
+    def __getitem__(self, idx):
+        item = self.data_list[idx]
+        # Load and preprocess the image
+        image = Image.open(item["image"]).convert("RGB")
+        image = self.image_transform(image)
+
+        # Tokenize the prompt
+        prompt = item["description"]
+        inputs = self.tokenizer(
+            prompt,
+            return_tensors="pt",
+            padding="max_length",
+            truncation=True,
+            max_length=77,
+        )
+
+        return {
+            "pixel_values": image,
+            "input_ids": inputs.input_ids.squeeze(),
+            "attention_mask": inputs.attention_mask.squeeze(),
+        }
+
+
+def fine_tune_model(
+    unet, text_encoder, vae, tokenizer, train_dataloader, num_epochs, device
+):
+    # Set models to train mode
+    unet.train()
+    text_encoder.train()
+
+    # Set up the optimizer
+    optimizer = AdamW(
+        list(unet.parameters()) + list(text_encoder.parameters()), lr=1e-5
+    )
+
+    # Set up learning rate scheduler
+    num_training_steps = num_epochs * len(train_dataloader)
+    lr_scheduler = get_scheduler(
+        "linear",
+        optimizer=optimizer,
+        num_warmup_steps=0,
+        num_training_steps=num_training_steps,
+    )
+
+    # Training loop
+    for epoch in range(num_epochs):
+        for step, batch in enumerate(train_dataloader):
+            optimizer.zero_grad()
+
+            # Move batch to device
+            pixel_values = batch["pixel_values"].to(device)
+            input_ids = batch["input_ids"].to(device)
+            attention_mask = batch["attention_mask"].to(device)
+
+            # Encode images to latents
+            latents = vae.encode(pixel_values).latent_dist.sample()
+            latents = latents * 0.18215  # Scaling factor
+
+            # Sample noise
+            noise = torch.randn_like(latents)
+            timesteps = torch.randint(0, 1000, (latents.size(0),), device=device).long()
+
+            # Add noise to latents
+            noisy_latents = unet.scheduler.add_noise(latents, noise, timesteps)
+
+            # Encode prompts
+            encoder_hidden_states = text_encoder(
+                input_ids, attention_mask=attention_mask
+            )[0]
+
+            # Predict noise residual
+            model_pred = unet(noisy_latents, timesteps, encoder_hidden_states).sample
+
+            # Compute loss
+            loss = torch.nn.functional.mse_loss(model_pred, noise)
+
+            # Backpropagation
+            loss.backward()
+            optimizer.step()
+            lr_scheduler.step()
+
+            if step % 100 == 0:
+                print(f"Epoch {epoch+1}, Step {step}, Loss: {loss.item()}")
+
+        print(f"Epoch {epoch+1}/{num_epochs} completed.")
 
 
 def encode_image(image, pipe, generator):
@@ -179,20 +282,27 @@ if __name__ == "__main__":
     ]
 
     pipeline = load_pipe(args.fp16, args.cache_dir)
+    # Load the tokenizer and VAE
+    tokenizer = AutoTokenizer.from_pretrained(
+        "stabilityai/sdxl-turbo", subfolder="tokenizer"
+    )
+    vae = AutoencoderKL.from_pretrained("stabilityai/sdxl-turbo", subfolder="vae").to(
+        device
+    )
 
-    for i, img_path in enumerate(img_paths):
-        img_name = img_path.split("/")[-1]
-        prompt = img_paths_to_prompts[img_name]["src_prompt"]
-        edit_prompts = img_paths_to_prompts[img_name]["tgt_prompt"]
+    # for i, img_path in enumerate(img_paths):
+    #     img_name = img_path.split("/")[-1]
+    #     prompt = img_paths_to_prompts[img_name]["src_prompt"]
+    #     edit_prompts = img_paths_to_prompts[img_name]["tgt_prompt"]
 
-        res = run(
-            img_path,
-            prompt,
-            edit_prompts[0],
-            args.seed,
-            args.w,
-            args.timesteps,
-            pipeline=pipeline,
-        )
-        os.makedirs(args.output_dir, exist_ok=True)
-        res.save(f"{args.output_dir}/output_{i}.png")
+    #     res = run(
+    #         img_path,
+    #         prompt,
+    #         edit_prompts[0],
+    #         args.seed,
+    #         args.w,
+    #         args.timesteps,
+    #         pipeline=pipeline,
+    #     )
+    #     os.makedirs(args.output_dir, exist_ok=True)
+    #     res.save(f"{args.output_dir}/output_{i}.png")

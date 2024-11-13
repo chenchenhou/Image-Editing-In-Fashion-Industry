@@ -85,16 +85,16 @@ for idx, row in df.iterrows():
 
     data_for_finetuning.append(
         {
-            "image": src_image_path,
-            "description": src_description,
+            "image": src_image_filename,
+            "text": src_description,
         }
     )
 
     data_for_image_editing.append(
         {
-            src_image_path: {
+            src_image_filename: {
                 "src_prompt": src_description,
-                "target_image": target_image_path,
+                "target_image": target_image_filename,
                 "tgt_prompt": target_description,
             }
         }
