@@ -127,8 +127,10 @@ def step_save_latents(
     sample: torch.FloatTensor,
     return_dict: bool = True,
 ):
-    timestep_index = self._timesteps.index(timestep)
+    timestep_index = self._timesteps.index(timestep)  # [1, 2, 3] for step = 4
     next_timestep_index = timestep_index + 1
+
+    # u_hat_t is the predicted u for q(x_{t-1} | x_t, x_0)
     u_hat_t = deterministic_ddpm_step(
         model_output=model_output,
         timestep=timestep,
@@ -136,6 +138,7 @@ def step_save_latents(
         scheduler=self,
     )
 
+    # self.x_ts = [x_3, x_2, x_1, x_0, x_0] in the case of step = 4
     x_t_minus_1 = self.x_ts[next_timestep_index]
     self.x_ts_c_predicted.append(u_hat_t)
 
@@ -169,6 +172,7 @@ def step_use_latents(
         self._config.max_norm_zs,
     )
 
+    # u(x_t_hat_c_hat) -> this is the edited image with novel prompt (edit_image with tgt prompt)
     x_t_hat_c_hat = deterministic_ddpm_step(
         model_output=model_output,
         timestep=timestep,
@@ -179,11 +183,15 @@ def step_use_latents(
     x_t_minus_1_exact = self.x_ts[next_timestep_index]
     x_t_minus_1_exact = x_t_minus_1_exact.expand_as(x_t_hat_c_hat)
 
-    x_t_c_predicted: torch.Tensor = self.x_ts_c_predicted[next_timestep_index]
+    x_t_c_predicted: torch.Tensor = self.x_ts_c_predicted[
+        next_timestep_index
+    ]  # x_ts_c_predicted stores u_hat_t
 
     x_t_c = x_t_c_predicted[0].expand_as(x_t_hat_c_hat)
 
-    edit_prompts_num = model_output.size(0) // 2
+    edit_prompts_num = (
+        model_output.size(0) // 2
+    )  # model_output -> (3, 4, 64, 64) -> edit_prompts_num = 1
     x_t_hat_c_indices = (
         0,
         edit_prompts_num,
@@ -192,7 +200,7 @@ def step_use_latents(
         edit_prompts_num,
         (model_output.size(0)),
     )
-    x_t_hat_c = torch.zeros_like(x_t_hat_c_hat)
+    x_t_hat_c = torch.zeros_like(x_t_hat_c_hat)  # (3, 4, 64, 64)
     x_t_hat_c[edit_images_indices[0] : edit_images_indices[1]] = x_t_hat_c_hat[
         x_t_hat_c_indices[0] : x_t_hat_c_indices[1]
     ]
@@ -272,18 +280,23 @@ def create_xts(
     x_0,
 ):
     if noise_timesteps is None:
-        noising_delta = noise_shift_delta * (timesteps[0] - timesteps[1])
-        noise_timesteps = [timestep - int(noising_delta) for timestep in timesteps]
+        noising_delta = noise_shift_delta * (
+            timesteps[0] - timesteps[1]
+        )  # noising_delta = 799 - 599 = 200
+        noise_timesteps = [
+            timestep - int(noising_delta) for timestep in timesteps
+        ]  # [599, 399, 199, -1]
 
-    first_x_0_idx = len(noise_timesteps)
+    first_x_0_idx = len(noise_timesteps)  # 4
     for i in range(len(noise_timesteps)):
         if noise_timesteps[i] <= 0:
-            first_x_0_idx = i
+            first_x_0_idx = i  # fist_x_0_idx = 3
             break
 
-    noise_timesteps = noise_timesteps[:first_x_0_idx]
+    noise_timesteps = noise_timesteps[:first_x_0_idx]  # [599, 399, 199]
 
-    x_0_expanded = x_0.expand(len(noise_timesteps), -1, -1, -1)
+    # x0 -> (1, 4, 64, 64)
+    x_0_expanded = x_0.expand(len(noise_timesteps), -1, -1, -1)  # (3, 4, 64, 64)
     noise = torch.randn(
         x_0_expanded.size(), generator=generator, device=SAMPLING_DEVICE
     ).to(x_0.device)
@@ -292,8 +305,10 @@ def create_xts(
         x_0_expanded,
         noise,
         torch.IntTensor(noise_timesteps),
-    )
-    x_ts = [t.unsqueeze(dim=0) for t in list(x_ts)]
-    x_ts += [x_0] * (len(timesteps) - first_x_0_idx)
-    x_ts += [x_0]
+    )  # (3, 4, 64, 64)
+    x_ts = [
+        t.unsqueeze(dim=0) for t in list(x_ts)
+    ]  # each x_t has shape (1, 4, 64, 64) correspond to x_t at time t = [599, 399, 199]
+    x_ts += [x_0] * (len(timesteps) - first_x_0_idx)  # [x_3, x_2, x_1, x_0]
+    x_ts += [x_0]  # [x_3, x_2, x_1, x_0, x_0]
     return x_ts

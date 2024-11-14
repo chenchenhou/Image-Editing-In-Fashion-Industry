@@ -1,9 +1,12 @@
 import os
+
+import pip
 from diffusers import AutoPipelineForImage2Image
 from diffusers import DDPMScheduler
-from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl_img2img import (
+from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl_inpaint import (
     retrieve_timesteps,
     retrieve_latents,
+    mask_pil_to_torch,
 )
 import torch
 from PIL import Image
@@ -11,11 +14,15 @@ import jsonc as json
 from diffusers import (
     AutoPipelineForImage2Image,
     StableDiffusionXLImg2ImgPipeline,
+    AutoPipelineForInpainting,
+    StableDiffusionXLInpaintPipeline,
 )
 from functools import partial
 from utils import SAMPLING_DEVICE, get_ddpm_inversion_scheduler, create_xts, device
 from config import get_config
 import argparse
+from diffusers.utils import load_image
+from torchvision.transforms.functional import to_pil_image
 
 
 VAE_SAMPLE = "argmax"  # "argmax" or "sample"
@@ -44,7 +51,29 @@ def encode_image(image, pipe, generator):
     return init_latents
 
 
-def set_pipeline(pipeline: StableDiffusionXLImg2ImgPipeline, num_timesteps, generator):
+def encode_mask(mask, pipe, generator):
+    pipe_dtype = pipe.dtype
+    mask = pipe.mask_processor.preprocess(mask)
+    mask = mask.to(device=device, dtype=pipe.dtype)
+
+    if pipe.vae.config.force_upcast:
+        mask = mask.float()
+        pipe.vae.to(dtype=torch.float32)
+
+    init_latents = retrieve_latents(
+        pipe.vae.encode(mask), generator=generator, sample_mode=VAE_SAMPLE
+    )
+
+    if pipe.vae.config.force_upcast:
+        pipe.vae.to(pipe_dtype)
+
+    init_latents = init_latents.to(pipe_dtype)
+    init_latents = pipe.vae.config.scaling_factor * init_latents
+
+    return init_latents
+
+
+def set_pipeline(pipeline: StableDiffusionXLInpaintPipeline, num_timesteps, generator):
     if num_timesteps == 3:
         config_from_file = "run_configs/noise_shift_steps_3.yaml"
     elif num_timesteps == 4:
@@ -54,16 +83,16 @@ def set_pipeline(pipeline: StableDiffusionXLImg2ImgPipeline, num_timesteps, gene
 
     config = get_config(config_from_file)
     if config.timesteps is None:
-        denoising_start = config.step_start / config.num_steps_inversion
+        denoising_start = config.step_start / config.num_steps_inversion  # 1/5
         timesteps, num_inference_steps = retrieve_timesteps(
             pipeline.scheduler, config.num_steps_inversion, device, None
-        )
+        )  # tensor([999, 799, 599, 399, 199], device='cuda:0')
         timesteps, num_inference_steps = pipeline.get_timesteps(
             num_inference_steps=num_inference_steps,
             device=device,
             denoising_start=denoising_start,
             strength=0,
-        )
+        )  # tensor([799, 599, 399, 199], device='cuda:0')
         timesteps = timesteps.type(torch.int64)
         pipeline.__call__ = partial(
             pipeline.__call__,
@@ -99,7 +128,7 @@ def run(
     seed,
     w1,
     num_timesteps,
-    pipeline: StableDiffusionXLImg2ImgPipeline,
+    pipeline: StableDiffusionXLInpaintPipeline,
 ):
 
     generator = torch.Generator(device=SAMPLING_DEVICE).manual_seed(seed)
@@ -108,6 +137,10 @@ def run(
 
     x_0_image = Image.open(image_path).convert("RGB").resize((512, 512), RESIZE_TYPE)
     x_0 = encode_image(x_0_image, pipeline, generator)
+    # timestpes = [799, 599, 399, 199] in the case of 4 steps
+    # x_0 = pipeline.image_processor.preprocess(x_0_image)
+    # x_0 = x_0.to(device=pipeline.device, dtype=pipeline.dtype)
+    # print(x_0.shape)
     x_ts = create_xts(
         config.noise_shift_delta,
         config.noise_timesteps,
@@ -127,9 +160,32 @@ def run(
     )
     pipeline.scheduler.w1 = w1
 
+    mask_image_raw = (
+        Image.open("/content/turbo-edit/dataset/mask.jpg")
+        .convert("RGB")
+        .resize((512, 512), RESIZE_TYPE)
+    )
+
+    mask_image = mask_pil_to_torch(mask_image_raw, 512, 512)
+    mask_image, mask_latent = pipeline.prepare_mask_latents(
+        mask_image,
+        masked_image=None,
+        batch_size=3,
+        height=512,
+        width=512,
+        generator=generator,
+        dtype=pipeline.dtype,
+        device=pipeline.device,
+        do_classifier_free_guidance=False,
+    )
+    # mask_latent = encode_image(mask_image, pipeline, generator)
+
+    # mask_image = load_image("/content/turbo-edit/dataset/mask.jpg")
     latent = latents[0].expand(3, -1, -1, -1)
     prompt = [src_prompt, src_prompt, tgt_prompt]
-    image = pipeline.__call__(image=latent, prompt=prompt).images
+    image = pipeline.__call__(
+        image=latent, prompt=prompt, mask_image=mask_image, mask_latent=mask_latent
+    ).images
     return image[2]
 
 
@@ -142,8 +198,8 @@ def load_pipe(fp16, cache_dir):
         if fp16
         else {}
     )
-    pipeline: StableDiffusionXLImg2ImgPipeline = (
-        AutoPipelineForImage2Image.from_pretrained(
+    pipeline: StableDiffusionXLInpaintPipeline = (
+        AutoPipelineForInpainting.from_pretrained(
             "stabilityai/sdxl-turbo",
             safety_checker=None,
             cache_dir=cache_dir,
