@@ -134,7 +134,7 @@ def set_pipeline(pipeline: StableDiffusionXLImg2ImgPipeline, num_timesteps, gene
     elif num_timesteps == 4:
         config_from_file = "run_configs/noise_shift_steps_4.yaml"
     else:
-        raise ValueError("num_timesteps must be 3 or 4")
+        config_from_file = "run_configs/noise_shift_steps.yaml"
 
     config = get_config(config_from_file)
     if config.timesteps is None:
