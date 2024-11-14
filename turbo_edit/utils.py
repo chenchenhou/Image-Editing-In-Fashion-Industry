@@ -1,314 +1,313 @@
-from typing import Optional, Union
+import os
+
+import pip
+from diffusers import AutoPipelineForImage2Image
+from diffusers import DDPMScheduler
+from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl_inpaint import (
+    mask_pil_to_torch,
+)
+from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl_img2img import (
+    retrieve_timesteps,
+    retrieve_latents,
+)
 import torch
-from diffusers.schedulers.scheduling_ddim import DDIMSchedulerOutput
+from PIL import Image
+import jsonc as json
+from diffusers import (
+    AutoPipelineForImage2Image,
+    StableDiffusionXLImg2ImgPipeline,
+    AutoPipelineForInpainting,
+    StableDiffusionXLInpaintPipeline,
+)
+from functools import partial
+from utils import SAMPLING_DEVICE, get_ddpm_inversion_scheduler, create_xts, device
+from config import get_config
+import argparse
+from diffusers.utils import load_image
+from torchvision.transforms.functional import to_pil_image
+from typing import Any, Callable, Dict, List, Optional, Union
+import PIL
+import numpy as np
 
-SAMPLING_DEVICE = "cpu"  # "cuda"
 
-device = "cuda" if torch.cuda.is_available() else "cpu"
+VAE_SAMPLE = "argmax"  # "argmax" or "sample"
+RESIZE_TYPE = None  # Image.LANCZOS
 
 
-def deterministic_ddpm_step(
-    model_output: torch.FloatTensor,
-    timestep: Union[float, torch.FloatTensor],
-    sample: torch.FloatTensor,
-    scheduler,
-):
+def encode_image(image, pipe, generator):
+    pipe_dtype = pipe.dtype
+    image = pipe.image_processor.preprocess(image)
+    image = image.to(device=device, dtype=pipe.dtype)
+
+    if pipe.vae.config.force_upcast:
+        image = image.float()
+        pipe.vae.to(dtype=torch.float32)
+
+    init_latents = retrieve_latents(
+        pipe.vae.encode(image), generator=generator, sample_mode=VAE_SAMPLE
+    )
+
+    if pipe.vae.config.force_upcast:
+        pipe.vae.to(pipe_dtype)
+
+    init_latents = init_latents.to(pipe_dtype)
+    init_latents = pipe.vae.config.scaling_factor * init_latents
+
+    return init_latents
+
+
+def prepare_mask(
+    mask: Union[PIL.Image.Image, np.ndarray, torch.Tensor]
+) -> torch.Tensor:
     """
-    Predict the sample from the previous timestep by reversing the SDE. This function propagates the diffusion
-    process from the learned model outputs (most often the predicted noise).
+    Prepares a mask to be consumed by the Stable Diffusion pipeline. This means that this input will be
+    converted to ``torch.Tensor`` with shapes ``batch x channels x height x width`` where ``channels`` is ``1`` for
+    the ``mask``.
+
+    The ``mask`` will be binarized (``mask > 0.5``) and cast to ``torch.float32`` too.
 
     Args:
-        model_output (`torch.FloatTensor`):
-            The direct output from learned diffusion model.
-        timestep (`float`):
-            The current discrete timestep in the diffusion chain.
-        sample (`torch.FloatTensor`):
-            A current instance of a sample created by the diffusion process.
-        generator (`torch.Generator`, *optional*):
-            A random number generator.
-        return_dict (`bool`, *optional*, defaults to `True`):
-            Whether or not to return a [`~schedulers.scheduling_ddpm.DDPMSchedulerOutput`] or `tuple`.
+        mask (_type_): The mask to apply to the image, i.e. regions to inpaint.
+            It can be a ``PIL.Image``, or a ``height x width`` ``np.array`` or a ``1 x height x width``
+            ``torch.Tensor`` or a ``batch x 1 x height x width`` ``torch.Tensor``.
+
+
+    Raises:
+        ValueError: ``torch.Tensor`` images should be in the ``[-1, 1]`` range. ValueError: ``torch.Tensor`` mask
+        should be in the ``[0, 1]`` range.
+        TypeError: ``mask`` is a ``torch.Tensor`` but ``image`` is not
+            (ot the other way around).
 
     Returns:
-        [`~schedulers.scheduling_ddpm.DDPMSchedulerOutput`] or `tuple`:
-            If return_dict is `True`, [`~schedulers.scheduling_ddpm.DDPMSchedulerOutput`] is returned, otherwise a
-            tuple is returned where the first element is the sample tensor.
-
+        torch.Tensor: mask as ``torch.Tensor`` with 4 dimensions: ``batch x channels x height x width``.
     """
-    t = timestep
+    if isinstance(mask, torch.Tensor):
+        if not isinstance(mask, torch.Tensor):
+            raise TypeError(
+                f"`image` is a torch.Tensor but `mask` (type: {type(mask)} is not"
+            )
 
-    prev_t = scheduler.previous_timestep(t)
+        # Batch and add channel dim for single mask
+        if mask.ndim == 2:
+            mask = mask.unsqueeze(0).unsqueeze(0)
 
-    if model_output.shape[1] == sample.shape[1] * 2 and scheduler.variance_type in [
-        "learned",
-        "learned_range",
-    ]:
-        model_output, predicted_variance = torch.split(
-            model_output, sample.shape[1], dim=1
+        # Batch single mask or add channel dim
+        if mask.ndim == 3:
+            # Single batched mask, no channel dim or single mask not batched but channel dim
+            if mask.shape[0] == 1:
+                mask = mask.unsqueeze(0)
+
+            # Batched masks no channel dim
+            else:
+                mask = mask.unsqueeze(1)
+
+        # Check mask is in [0, 1]
+        if mask.min() < 0 or mask.max() > 1:
+            raise ValueError("Mask should be in [0, 1] range")
+
+        # Binarize mask
+        mask[mask < 0.5] = 0
+        mask[mask >= 0.5] = 1
+    else:
+        # preprocess mask
+        if isinstance(mask, (PIL.Image.Image, np.ndarray)):
+            mask = [mask]
+
+        if isinstance(mask, list) and isinstance(mask[0], PIL.Image.Image):
+            mask = np.concatenate(
+                [np.array(m.convert("L"))[None, None, :] for m in mask], axis=0
+            )
+            mask = mask.astype(np.float32) / 255.0
+        elif isinstance(mask, list) and isinstance(mask[0], np.ndarray):
+            mask = np.concatenate([m[None, None, :] for m in mask], axis=0)
+
+        mask[mask < 0.5] = 0
+        mask[mask >= 0.5] = 1
+        mask = torch.from_numpy(mask)
+
+    return mask
+
+
+def set_pipeline(pipeline: StableDiffusionXLImg2ImgPipeline, num_timesteps, generator):
+    if num_timesteps == 3:
+        config_from_file = "run_configs/noise_shift_steps_3.yaml"
+    elif num_timesteps == 4:
+        config_from_file = "run_configs/noise_shift_steps_4.yaml"
+    else:
+        raise ValueError("num_timesteps must be 3 or 4")
+
+    config = get_config(config_from_file)
+    if config.timesteps is None:
+        denoising_start = config.step_start / config.num_steps_inversion  # 1/5
+        timesteps, num_inference_steps = retrieve_timesteps(
+            pipeline.scheduler, config.num_steps_inversion, device, None
+        )  # tensor([999, 799, 599, 399, 199], device='cuda:0')
+        timesteps, num_inference_steps = pipeline.get_timesteps(
+            num_inference_steps=num_inference_steps,
+            device=device,
+            denoising_start=denoising_start,
+            strength=0,
+        )  # tensor([799, 599, 399, 199], device='cuda:0')
+        timesteps = timesteps.type(torch.int64)
+        pipeline.__call__ = partial(
+            pipeline.__call__,
+            num_inference_steps=config.num_steps_inversion,
+            guidance_scale=0,
+            generator=generator,
+            denoising_start=denoising_start,
+            strength=0,
+        )
+        pipeline.scheduler.set_timesteps(
+            timesteps=timesteps.cpu(),
         )
     else:
-        predicted_variance = None
-
-    # 1. compute alphas, betas
-    alpha_prod_t = scheduler.alphas_cumprod[t]
-    alpha_prod_t_prev = (
-        scheduler.alphas_cumprod[prev_t] if prev_t >= 0 else scheduler.one
-    )
-    beta_prod_t = 1 - alpha_prod_t
-    beta_prod_t_prev = 1 - alpha_prod_t_prev
-    current_alpha_t = alpha_prod_t / alpha_prod_t_prev
-    current_beta_t = 1 - current_alpha_t
-
-    # 2. compute predicted original sample from predicted noise also called
-    # "predicted x_0" of formula (15) from https://arxiv.org/pdf/2006.11239.pdf
-    if scheduler.config.prediction_type == "epsilon":
-        pred_original_sample = (
-            sample - beta_prod_t ** (0.5) * model_output
-        ) / alpha_prod_t ** (0.5)
-    elif scheduler.config.prediction_type == "sample":
-        pred_original_sample = model_output
-    elif scheduler.config.prediction_type == "v_prediction":
-        pred_original_sample = (alpha_prod_t**0.5) * sample - (
-            beta_prod_t**0.5
-        ) * model_output
-    else:
-        raise ValueError(
-            f"prediction_type given as {scheduler.config.prediction_type} must be one of `epsilon`, `sample` or"
-            " `v_prediction`  for the DDPMScheduler."
+        timesteps = torch.tensor(config.timesteps, dtype=torch.int64)
+        pipeline.__call__ = partial(
+            pipeline.__call__,
+            timesteps=timesteps,
+            guidance_scale=0,
+            denoising_start=0,
+            strength=1,
         )
-
-    # 3. Clip or threshold "predicted x_0"
-    if scheduler.config.thresholding:
-        pred_original_sample = scheduler._threshold_sample(pred_original_sample)
-    elif scheduler.config.clip_sample:
-        pred_original_sample = pred_original_sample.clamp(
-            -scheduler.config.clip_sample_range, scheduler.config.clip_sample_range
+        pipeline.scheduler.set_timesteps(
+            timesteps=config.timesteps,  # device=pipeline.device
         )
-
-    # 4. Compute coefficients for pred_original_sample x_0 and current sample x_t
-    # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-    pred_original_sample_coeff = (
-        alpha_prod_t_prev ** (0.5) * current_beta_t
-    ) / beta_prod_t
-    current_sample_coeff = current_alpha_t ** (0.5) * beta_prod_t_prev / beta_prod_t
-
-    # 5. Compute predicted previous sample µ_t
-    # See formula (7) from https://arxiv.org/pdf/2006.11239.pdf
-    pred_prev_sample = (
-        pred_original_sample_coeff * pred_original_sample
-        + current_sample_coeff * sample
-    )
-
-    return pred_prev_sample
+    timesteps = [torch.tensor(t) for t in timesteps.tolist()]
+    return timesteps, config
 
 
-def normalize(
-    z_t,
-    i,
-    max_norm_zs,
+def run(
+    image_path,
+    src_prompt,
+    tgt_prompt,
+    seed,
+    w1,
+    num_timesteps,
+    pipeline: StableDiffusionXLImg2ImgPipeline,
 ):
-    max_norm = max_norm_zs[i]
-    if max_norm < 0:
-        return z_t, 1
 
-    norm = torch.norm(z_t)
-    if norm < max_norm:
-        return z_t, 1
+    generator = torch.Generator(device=SAMPLING_DEVICE).manual_seed(seed)
 
-    coeff = max_norm / norm
-    z_t = z_t * coeff
-    return z_t, coeff
+    timesteps, config = set_pipeline(pipeline, num_timesteps, generator)
+
+    x_0_image = Image.open(image_path).convert("RGB").resize((512, 512), RESIZE_TYPE)
+    x_0 = encode_image(x_0_image, pipeline, generator)
+    # timestpes = [799, 599, 399, 199] in the case of 4 steps
+    # x_0 = pipeline.image_processor.preprocess(x_0_image)
+    # x_0 = x_0.to(device=pipeline.device, dtype=pipeline.dtype)
+    # print(x_0.shape)
+    x_ts = create_xts(
+        config.noise_shift_delta,
+        config.noise_timesteps,
+        generator,
+        pipeline.scheduler,
+        timesteps,
+        x_0,
+    )
+    mask_image_raw = (
+        Image.open("/content/turbo-edit/dataset/mask.jpg")
+        .convert("RGB")
+        .resize((512, 512), RESIZE_TYPE)
+    )
+    # mask_image = mask_pil_to_torch(mask_image_raw, 512, 512)
+    # mask_image, mask_latent = pipeline.prepare_mask_latents(
+    #     mask_image,
+    #     masked_image=None,
+    #     batch_size=3,
+    #     height=512,
+    #     width=512,
+    #     generator=generator,
+    #     dtype=pipeline.dtype,
+    #     device=pipeline.device,
+    #     do_classifier_free_guidance=False,
+    # )
+    mask = prepare_mask(mask_image_raw)
+    height, width = mask.shape[-2:]
+    mask = torch.nn.functional.interpolate(
+        mask,
+        size=(height // pipeline.vae_scale_factor, width // pipeline.vae_scale_factor),
+    )
+    mask = mask.to(x_0.device)
+    mask = mask.to(x_0.dtype)
+    # print(mask.shape)
+    x_ts = [xt.to(dtype=x_0.dtype) for xt in x_ts]
+    latents = [x_ts[0]]
+    pipeline.scheduler = get_ddpm_inversion_scheduler(
+        pipeline.scheduler,
+        config,
+        timesteps,
+        latents,
+        x_ts,
+        mask=mask,
+    )
+    pipeline.scheduler.w1 = w1
+
+    latent = latents[0].expand(3, -1, -1, -1)
+    prompt = [src_prompt, src_prompt, tgt_prompt]
+    image = pipeline.__call__(image=latent, prompt=prompt).images
+    return image[2]
 
 
-def step_save_latents(
-    self,
-    model_output: torch.FloatTensor,
-    timestep: int,
-    sample: torch.FloatTensor,
-    return_dict: bool = True,
-):
-    timestep_index = self._timesteps.index(timestep)  # [1, 2, 3] for step = 4
-    next_timestep_index = timestep_index + 1
-
-    # u_hat_t is the predicted u for q(x_{t-1} | x_t, x_0)
-    u_hat_t = deterministic_ddpm_step(
-        model_output=model_output,
-        timestep=timestep,
-        sample=sample,
-        scheduler=self,
+def load_pipe(fp16, cache_dir):
+    kwargs = (
+        {
+            "torch_dtype": torch.float16,
+            "variant": "fp16",
+        }
+        if fp16
+        else {}
+    )
+    pipeline: StableDiffusionXLImg2ImgPipeline = (
+        AutoPipelineForImage2Image.from_pretrained(
+            "stabilityai/sdxl-turbo",
+            safety_checker=None,
+            cache_dir=cache_dir,
+            **kwargs,
+        )
+    )
+    pipeline = pipeline.to(device)
+    pipeline.scheduler = DDPMScheduler.from_pretrained(  # type: ignore
+        "stabilityai/sdxl-turbo",
+        subfolder="scheduler",
     )
 
-    # self.x_ts = [x_3, x_2, x_1, x_0, x_0] in the case of step = 4
-    x_t_minus_1 = self.x_ts[next_timestep_index]
-    self.x_ts_c_predicted.append(u_hat_t)
-
-    z_t = x_t_minus_1 - u_hat_t
-    self.latents.append(z_t)
-
-    z_t, _ = normalize(z_t, timestep_index, self._config.max_norm_zs)
-
-    x_t_minus_1_predicted = u_hat_t + z_t
-
-    if not return_dict:
-        return (x_t_minus_1_predicted,)
-
-    return DDIMSchedulerOutput(prev_sample=x_t_minus_1, pred_original_sample=None)
+    return pipeline
 
 
-def step_use_latents(
-    self,
-    model_output: torch.FloatTensor,
-    timestep: int,
-    sample: torch.FloatTensor,
-    return_dict: bool = True,
-):
-    timestep_index = self._timesteps.index(timestep)
-    next_timestep_index = timestep_index + 1
-    z_t = self.latents[next_timestep_index]  # + 1 because latents[0] is X_T
+if __name__ == "__main__":
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--cache_dir", type=str, default=None)
+    parser.add_argument("--prompts_file", type=str, default="")
+    parser.set_defaults(fp16=False)
+    parser.add_argument("--fp16", action="store_true")
+    parser.add_argument("--seed", type=int, default=2)
+    parser.add_argument("--w", type=float, default=1.5)
+    parser.add_argument("--timesteps", type=int, default=4)  # 3 or 4
+    parser.add_argument("--output_dir", type=str, default="output")
 
-    _, normalize_coefficient = normalize(
-        z_t,
-        timestep_index,
-        self._config.max_norm_zs,
-    )
+    args = parser.parse_args()
 
-    # u(x_t_hat_c_hat) -> this is the edited image with novel prompt (edit_image with tgt prompt)
-    x_t_hat_c_hat = deterministic_ddpm_step(
-        model_output=model_output,
-        timestep=timestep,
-        sample=sample,
-        scheduler=self,
-    )
-
-    x_t_minus_1_exact = self.x_ts[next_timestep_index]
-    x_t_minus_1_exact = x_t_minus_1_exact.expand_as(x_t_hat_c_hat)
-
-    x_t_c_predicted: torch.Tensor = self.x_ts_c_predicted[
-        next_timestep_index
-    ]  # x_ts_c_predicted stores u_hat_t
-
-    x_t_c = x_t_c_predicted[0].expand_as(x_t_hat_c_hat)
-
-    edit_prompts_num = (
-        model_output.size(0) // 2
-    )  # model_output -> (3, 4, 64, 64) -> edit_prompts_num = 1
-    x_t_hat_c_indices = (
-        0,
-        edit_prompts_num,
-    )
-    edit_images_indices = (
-        edit_prompts_num,
-        (model_output.size(0)),
-    )
-    x_t_hat_c = torch.zeros_like(x_t_hat_c_hat)  # (3, 4, 64, 64)
-    x_t_hat_c[edit_images_indices[0] : edit_images_indices[1]] = x_t_hat_c_hat[
-        x_t_hat_c_indices[0] : x_t_hat_c_indices[1]
+    img_paths_to_prompts = json.load(open(args.prompts_file, "r"))
+    eval_dataset_folder = "/".join(args.prompts_file.split("/")[:-1]) + "/"
+    img_paths = [
+        f"{eval_dataset_folder}/{img_name}" for img_name in img_paths_to_prompts.keys()
     ]
 
-    cross_prompt_term = x_t_hat_c_hat - x_t_hat_c
-    cross_trajectory_term = x_t_hat_c - normalize_coefficient * x_t_c
-    x_t_minus_1_hat = (
-        normalize_coefficient * x_t_minus_1_exact
-        + cross_trajectory_term
-        + self.w1 * cross_prompt_term
-    )
+    pipeline = load_pipe(args.fp16, args.cache_dir)
 
-    x_t_minus_1_hat[x_t_hat_c_indices[0] : x_t_hat_c_indices[1]] = x_t_minus_1_hat[
-        edit_images_indices[0] : edit_images_indices[1]
-    ]  # update x_t_hat_c to be x_t_hat_c_hat
+    for i, img_path in enumerate(img_paths):
+        img_name = img_path.split("/")[-1]
+        prompt = img_paths_to_prompts[img_name]["src_prompt"]
+        edit_prompts = img_paths_to_prompts[img_name]["tgt_prompt"]
 
-    if not return_dict:
-        return (x_t_minus_1_hat,)
-
-    return DDIMSchedulerOutput(
-        prev_sample=x_t_minus_1_hat,
-        pred_original_sample=None,
-    )
-
-
-def get_ddpm_inversion_scheduler(
-    scheduler,
-    config,
-    timesteps,
-    latents,
-    x_ts,
-):
-    def step(
-        model_output: torch.FloatTensor,
-        timestep: int,
-        sample: torch.FloatTensor,
-        eta: float = 0.0,
-        use_clipped_model_output: bool = False,
-        generator=None,
-        variance_noise: Optional[torch.FloatTensor] = None,
-        return_dict: bool = True,
-    ):
-        # predict and save x_t_c
-        res_inv = step_save_latents(
-            scheduler,
-            model_output[:1, :, :, :],
-            timestep,
-            sample[:1, :, :, :],
-            return_dict,
+        res = run(
+            img_path,
+            prompt,
+            edit_prompts[0],
+            args.seed,
+            args.w,
+            args.timesteps,
+            pipeline=pipeline,
         )
-
-        res_inf = step_use_latents(
-            scheduler,
-            model_output[1:, :, :, :],
-            timestep,
-            sample[1:, :, :, :],
-            return_dict,
-        )
-        res = (torch.cat((res_inv[0], res_inf[0]), dim=0),)
-        return res
-
-    scheduler._timesteps = timesteps
-    scheduler._config = config
-    scheduler.latents = latents
-    scheduler.x_ts = x_ts
-    scheduler.x_ts_c_predicted = [None]
-    scheduler.step = step
-    return scheduler
-
-
-def create_xts(
-    noise_shift_delta,
-    noise_timesteps,
-    generator,
-    scheduler,
-    timesteps,
-    x_0,
-):
-    if noise_timesteps is None:
-        noising_delta = noise_shift_delta * (
-            timesteps[0] - timesteps[1]
-        )  # noising_delta = 799 - 599 = 200
-        noise_timesteps = [
-            timestep - int(noising_delta) for timestep in timesteps
-        ]  # [599, 399, 199, -1]
-
-    first_x_0_idx = len(noise_timesteps)  # 4
-    for i in range(len(noise_timesteps)):
-        if noise_timesteps[i] <= 0:
-            first_x_0_idx = i  # fist_x_0_idx = 3
-            break
-
-    noise_timesteps = noise_timesteps[:first_x_0_idx]  # [599, 399, 199]
-
-    # x0 -> (1, 4, 64, 64)
-    x_0_expanded = x_0.expand(len(noise_timesteps), -1, -1, -1)  # (3, 4, 64, 64)
-    noise = torch.randn(
-        x_0_expanded.size(), generator=generator, device=SAMPLING_DEVICE
-    ).to(x_0.device)
-
-    x_ts = scheduler.add_noise(
-        x_0_expanded,
-        noise,
-        torch.IntTensor(noise_timesteps),
-    )  # (3, 4, 64, 64)
-    x_ts = [
-        t.unsqueeze(dim=0) for t in list(x_ts)
-    ]  # each x_t has shape (1, 4, 64, 64) correspond to x_t at time t = [599, 399, 199]
-    x_ts += [x_0] * (len(timesteps) - first_x_0_idx)  # [x_3, x_2, x_1, x_0]
-    x_ts += [x_0]  # [x_3, x_2, x_1, x_0, x_0]
-    return x_ts
+        os.makedirs(args.output_dir, exist_ok=True)
+        res.save(f"{args.output_dir}/output_{i}.png")
