@@ -23,7 +23,7 @@ max_norm_zs:
   ]
 noise_shift_delta: 1
 noise_timesteps: null
-num_steps_inversion: 21
+num_steps_inversion: 101
 step_start: 1
 timesteps: null
 ws1: 1.5
