@@ -138,6 +138,7 @@ def set_pipeline(pipeline: StableDiffusionXLImg2ImgPipeline, num_timesteps, gene
 
     config = get_config(config_from_file)
     if config.timesteps is None:
+
         denoising_start = config.step_start / config.num_steps_inversion  # 1/5
         timesteps, num_inference_steps = retrieve_timesteps(
             pipeline.scheduler, config.num_steps_inversion, device, None
@@ -237,7 +238,7 @@ def run(
         timesteps,
         latents,
         x_ts,
-        mask=mask,
+        mask,
     )
     pipeline.scheduler.w1 = w1
 
@@ -257,7 +258,7 @@ def load_pipe(fp16, cache_dir):
         else {}
     )
     pipeline: StableDiffusionXLImg2ImgPipeline = (
-        AutoPipelineForInpainting.from_pretrained(
+        AutoPipelineForImage2Image.from_pretrained(
             "stabilityai/sdxl-turbo",
             safety_checker=None,
             cache_dir=cache_dir,

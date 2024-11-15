@@ -257,8 +257,8 @@ def get_ddpm_inversion_scheduler(
             model_output[:1, :, :, :],
             timestep,
             sample[:1, :, :, :],
+            mask
             return_dict,
-            mask=mask,
         )
 
         res_inf = step_use_latents(
@@ -266,8 +266,8 @@ def get_ddpm_inversion_scheduler(
             model_output[1:, :, :, :],
             timestep,
             sample[1:, :, :, :],
+            mask
             return_dict,
-            mask=mask,
         )
         res = (torch.cat((res_inv[0], res_inf[0]), dim=0),)
         return res
