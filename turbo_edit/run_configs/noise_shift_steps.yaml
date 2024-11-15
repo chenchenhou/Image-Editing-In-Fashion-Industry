@@ -1,7 +1,29 @@
-max_norm_zs: [-1, -1, -1, -1, -1, -1, -1, -1, -1, 15.5]
+max_norm_zs:
+  [
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    -1,
+    15.5,
+  ]
 noise_shift_delta: 1
 noise_timesteps: null
-num_steps_inversion: 11
+num_steps_inversion: 21
 step_start: 1
 timesteps: null
 ws1: 1.5
