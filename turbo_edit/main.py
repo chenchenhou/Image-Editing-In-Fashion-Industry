@@ -1,5 +1,5 @@
 import os
-
+import cv2
 import pip
 from diffusers import AutoPipelineForImage2Image
 from diffusers import DDPMScheduler
@@ -11,7 +11,7 @@ from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl_img2im
     retrieve_latents,
 )
 import torch
-from PIL import Image
+import PIL
 import jsonc as json
 from diffusers import (
     AutoPipelineForImage2Image,
@@ -26,8 +26,11 @@ import argparse
 from diffusers.utils import load_image
 from torchvision.transforms.functional import to_pil_image
 from typing import Any, Callable, Dict, List, Optional, Union
-import PIL
+from PIL import Image, ImageDraw
 import numpy as np
+from autodistill_grounded_sam import GroundedSAM
+from autodistill.detection import CaptionOntology
+import shutil
 
 
 VAE_SAMPLE = "argmax"  # "argmax" or "sample"
@@ -185,6 +188,8 @@ def run(
     w1,
     num_timesteps,
     pipeline: StableDiffusionXLImg2ImgPipeline,
+    annotation_path,
+    label_to_class_id,
 ):
 
     generator = torch.Generator(device=SAMPLING_DEVICE).manual_seed(seed)
@@ -192,6 +197,21 @@ def run(
     timesteps, config = set_pipeline(pipeline, num_timesteps, generator)
 
     x_0_image = Image.open(image_path).convert("RGB").resize((512, 512), RESIZE_TYPE)
+
+    image_np = np.array(x_0_image)
+    image_height, image_width = image_np.shape[:2]
+
+    polygons = load_polygons(annotation_path, image_width, image_height)
+    if not polygons:
+        print(f"No polygons found in {annotation_path}. Skipping.")
+        return
+    target_class_ids = extract_target_class_ids(tgt_prompt, label_to_class_id)
+
+    mask_array = create_mask_from_polygons((image_width, image_height), polygons, target_class_ids)
+    mask_image = Image.fromarray((mask_array * 255).astype(np.uint8))
+    mask_image.save(f"output/mask_{os.path.basename(image_path)}")
+    mask = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0).float().to(device)
+
     x_0 = encode_image(x_0_image, pipeline, generator)
     # timestpes = [799, 599, 399, 199] in the case of 4 steps
     # x_0 = pipeline.image_processor.preprocess(x_0_image)
@@ -205,11 +225,14 @@ def run(
         timesteps,
         x_0,
     )
-    mask_image_raw = (
-        Image.open("/content/turbo-edit/dataset/mask.jpg")
-        .convert("RGB")
-        .resize((512, 512), RESIZE_TYPE)
-    )
+    # mask_image_raw = (
+    #     Image.open("dataset/mask.png")
+    #     .convert("RGB")
+    #     .resize((512, 512), RESIZE_TYPE)
+    # )
+    # mask_array = np.array(mask_image_raw)
+    # print(np.max(mask_array))
+    # print(np.min(mask_array))
     # mask_image = mask_pil_to_torch(mask_image_raw, 512, 512)
     # mask_image, mask_latent = pipeline.prepare_mask_latents(
     #     mask_image,
@@ -222,12 +245,12 @@ def run(
     #     device=pipeline.device,
     #     do_classifier_free_guidance=False,
     # )
-    mask = prepare_mask(mask_image_raw)
+    # mask = prepare_mask(mask_image_raw)
     height, width = mask.shape[-2:]
     mask = torch.nn.functional.interpolate(
         mask,
         size=(height // pipeline.vae_scale_factor, width // pipeline.vae_scale_factor),
-    )
+    ).squeeze(0)
     mask = mask.to(x_0.device)
     mask = mask.to(x_0.dtype)
     x_ts = [xt.to(dtype=x_0.dtype) for xt in x_ts]
@@ -273,6 +296,39 @@ def load_pipe(fp16, cache_dir):
 
     return pipeline
 
+def load_polygons(annotation_path, image_width, image_height):
+    polygons = []
+    with open(annotation_path, 'r') as f:
+        lines = f.readlines()
+        for line in lines:
+            parts = line.strip().split()
+            if len(parts) > 2:
+                class_id = int(parts[0])
+                coords = list(map(float, parts[1:]))
+                # Group coordinates into (x, y) pairs
+                polygon = []
+                for i in range(0, len(coords), 2):
+                    x = int(coords[i] * image_width)
+                    y = int(coords[i+1] * image_height)
+                    polygon.append((x, y))
+                polygons.append((class_id, polygon))
+    return polygons
+
+def create_mask_from_polygons(image_size, polygons, target_class_ids):
+    mask = Image.new('L', image_size, 0)  # Create a blank mask image
+    draw = ImageDraw.Draw(mask)
+    for class_id, polygon in polygons:
+        if class_id in target_class_ids:
+            draw.polygon(polygon, outline=1, fill=1)
+    mask_array = np.array(mask)
+    return mask_array
+
+def extract_target_class_ids(target_prompt, label_to_class_id):
+    target_class_ids = []
+    for label, class_id in label_to_class_id.items():
+        if label.lower() in target_prompt.lower():
+            target_class_ids.append(class_id)
+    return target_class_ids
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -292,6 +348,40 @@ if __name__ == "__main__":
     img_paths = [
         f"{eval_dataset_folder}/{img_name}" for img_name in img_paths_to_prompts.keys()
     ]
+    DATASET_DIR_PATH = "labeled_dataset"
+    if os.path.exists(DATASET_DIR_PATH):
+        shutil.rmtree(DATASET_DIR_PATH)
+
+    ontology = CaptionOntology(
+        {
+            "shirt":"shirt",
+            "t-shirt": "t-shirt",
+            "glasses": "glasses",
+            "pants": "pants",
+            "hat": "hat",
+            "dress": "dress",
+            "skirt": "skirt",
+            "shoes": "shoes",
+        }
+    )
+    ontology_labels = [label for label, _ in ontology.promptMap]
+
+    label_to_class_id = {label: idx for idx, label in enumerate(ontology_labels)}
+
+    base_model = GroundedSAM(ontology)
+    IMAGE_DIR_PATH = os.path.join("dataset")
+    
+    dataset = base_model.label(
+        input_folder = IMAGE_DIR_PATH,
+        extension = ".jpg",
+        output_folder = DATASET_DIR_PATH,
+    )
+
+    IMAGE_DIR_PATH = os.path.join(DATASET_DIR_PATH, 'valid', 'images')
+    ANNOTATIONS_DIR_PATH = os.path.join(DATASET_DIR_PATH, 'valid', 'labels')
+    img_paths = [
+        os.path.join(IMAGE_DIR_PATH, img_name) for img_name in img_paths_to_prompts.keys()
+    ]
 
     pipeline = load_pipe(args.fp16, args.cache_dir)
 
@@ -299,6 +389,9 @@ if __name__ == "__main__":
         img_name = img_path.split("/")[-1]
         prompt = img_paths_to_prompts[img_name]["src_prompt"]
         edit_prompts = img_paths_to_prompts[img_name]["tgt_prompt"]
+
+        annotation_name = img_name.replace(".jpg", ".txt")
+        annotation_path = os.path.join(ANNOTATIONS_DIR_PATH, annotation_name)
 
         res = run(
             img_path,
@@ -308,6 +401,8 @@ if __name__ == "__main__":
             args.w,
             args.timesteps,
             pipeline=pipeline,
+            annotation_path = annotation_path,
+            label_to_class_id=label_to_class_id,
         )
         os.makedirs(args.output_dir, exist_ok=True)
         res.save(f"{args.output_dir}/output_{i}.png")
