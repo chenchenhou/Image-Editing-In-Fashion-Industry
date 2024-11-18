@@ -32,5 +32,8 @@ python main.py --prompts_file="dataset/dataset.json"
 **Current Issue: Inpainting requires much more steps to actually produce moderate (or poor) results. It will be greatly appreciate if anyone has any good ideas of improving image quality :)**
 
 **Install below items for grounded sam**
+
+```
 pip install autodistill==0.1.1
 pip install autodistill-grounded-sam==0.1.1
+```
