@@ -1,5 +1,6 @@
 import os
 import cv2
+from matplotlib import category
 import pip
 from diffusers import AutoPipelineForImage2Image
 from diffusers import DDPMScheduler
@@ -31,6 +32,8 @@ import numpy as np
 from autodistill_grounded_sam import GroundedSAM
 from autodistill.detection import CaptionOntology
 import shutil
+import pandas as pd
+import time
 
 
 VAE_SAMPLE = "argmax"  # "argmax" or "sample"
@@ -207,7 +210,9 @@ def run(
         return
     target_class_ids = extract_target_class_ids(tgt_prompt, label_to_class_id)
 
-    mask_array = create_mask_from_polygons((image_width, image_height), polygons, target_class_ids)
+    mask_array = create_mask_from_polygons(
+        (image_width, image_height), polygons, target_class_ids
+    )
     mask_image = Image.fromarray((mask_array * 255).astype(np.uint8))
     mask_image.save(f"output/mask_{os.path.basename(image_path)}")
     mask = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0).float().to(device)
@@ -267,8 +272,10 @@ def run(
 
     latent = latents[0].expand(3, -1, -1, -1)
     prompt = [src_prompt, src_prompt, tgt_prompt]
+    start = time.time()
     image = pipeline.__call__(image=latent, prompt=prompt).images
-    return image[2]
+    end = time.time()
+    return image[2], end - start
 
 
 def load_pipe(fp16, cache_dir):
@@ -296,9 +303,10 @@ def load_pipe(fp16, cache_dir):
 
     return pipeline
 
+
 def load_polygons(annotation_path, image_width, image_height):
     polygons = []
-    with open(annotation_path, 'r') as f:
+    with open(annotation_path, "r") as f:
         lines = f.readlines()
         for line in lines:
             parts = line.strip().split()
@@ -309,13 +317,14 @@ def load_polygons(annotation_path, image_width, image_height):
                 polygon = []
                 for i in range(0, len(coords), 2):
                     x = int(coords[i] * image_width)
-                    y = int(coords[i+1] * image_height)
+                    y = int(coords[i + 1] * image_height)
                     polygon.append((x, y))
                 polygons.append((class_id, polygon))
     return polygons
 
+
 def create_mask_from_polygons(image_size, polygons, target_class_ids):
-    mask = Image.new('L', image_size, 0)  # Create a blank mask image
+    mask = Image.new("L", image_size, 0)  # Create a blank mask image
     draw = ImageDraw.Draw(mask)
     for class_id, polygon in polygons:
         if class_id in target_class_ids:
@@ -323,12 +332,14 @@ def create_mask_from_polygons(image_size, polygons, target_class_ids):
     mask_array = np.array(mask)
     return mask_array
 
+
 def extract_target_class_ids(target_prompt, label_to_class_id):
     target_class_ids = []
     for label, class_id in label_to_class_id.items():
         if label.lower() in target_prompt.lower():
             target_class_ids.append(class_id)
     return target_class_ids
+
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
@@ -340,6 +351,7 @@ if __name__ == "__main__":
     parser.add_argument("--w", type=float, default=1.5)
     parser.add_argument("--timesteps", type=int, default=4)  # 3 or 4
     parser.add_argument("--output_dir", type=str, default="output")
+    parser.add_argument("--data_pickle", type=str, default="../data/val.pkl")
 
     args = parser.parse_args()
 
@@ -352,39 +364,48 @@ if __name__ == "__main__":
     if os.path.exists(DATASET_DIR_PATH):
         shutil.rmtree(DATASET_DIR_PATH)
 
-    ontology = CaptionOntology(
-        {
-            "shirt":"shirt",
-            "t-shirt": "t-shirt",
-            "glasses": "glasses",
-            "pants": "pants",
-            "hat": "hat",
-            "dress": "dress",
-            "skirt": "skirt",
-            "shoes": "shoes",
-        }
-    )
+    df = pd.read_pickle(args.data_pickle)
+    categories = set(df["category"].values)
+    cleaned_categories = {}
+    for c in categories:
+        if "&" in c:
+            c = c.split("&")[0].strip()
+        cleaned_categories[c] = c
+    # ontology = CaptionOntology(
+    #     {
+    #         "shirt": "shirt",
+    #         "t-shirt": "t-shirt",
+    #         "glasses": "glasses",
+    #         "pants": "pants",
+    #         "hat": "hat",
+    #         "dress": "dress",
+    #         "skirt": "skirt",
+    #         "shoes": "shoes",
+    #     }
+    # )
+    ontology = CaptionOntology(cleaned_categories)
     ontology_labels = [label for label, _ in ontology.promptMap]
 
     label_to_class_id = {label: idx for idx, label in enumerate(ontology_labels)}
 
     base_model = GroundedSAM(ontology)
     IMAGE_DIR_PATH = os.path.join("dataset")
-    
+
     dataset = base_model.label(
-        input_folder = IMAGE_DIR_PATH,
-        extension = ".jpg",
-        output_folder = DATASET_DIR_PATH,
+        input_folder=IMAGE_DIR_PATH,
+        extension=".jpg",
+        output_folder=DATASET_DIR_PATH,
     )
 
-    IMAGE_DIR_PATH = os.path.join(DATASET_DIR_PATH, 'valid', 'images')
-    ANNOTATIONS_DIR_PATH = os.path.join(DATASET_DIR_PATH, 'valid', 'labels')
+    IMAGE_DIR_PATH = os.path.join(DATASET_DIR_PATH, "valid", "images")
+    ANNOTATIONS_DIR_PATH = os.path.join(DATASET_DIR_PATH, "valid", "labels")
     img_paths = [
-        os.path.join(IMAGE_DIR_PATH, img_name) for img_name in img_paths_to_prompts.keys()
+        os.path.join(IMAGE_DIR_PATH, img_name)
+        for img_name in img_paths_to_prompts.keys()
     ]
 
     pipeline = load_pipe(args.fp16, args.cache_dir)
-
+    running_times = 0.0
     for i, img_path in enumerate(img_paths):
         img_name = img_path.split("/")[-1]
         prompt = img_paths_to_prompts[img_name]["src_prompt"]
@@ -393,7 +414,7 @@ if __name__ == "__main__":
         annotation_name = img_name.replace(".jpg", ".txt")
         annotation_path = os.path.join(ANNOTATIONS_DIR_PATH, annotation_name)
 
-        res = run(
+        res, diffusion_time = run(
             img_path,
             prompt,
             edit_prompts[0],
@@ -401,8 +422,12 @@ if __name__ == "__main__":
             args.w,
             args.timesteps,
             pipeline=pipeline,
-            annotation_path = annotation_path,
+            annotation_path=annotation_path,
             label_to_class_id=label_to_class_id,
         )
+        running_times += diffusion_time
         os.makedirs(args.output_dir, exist_ok=True)
         res.save(f"{args.output_dir}/output_{i}.png")
+
+    print(f"Total time: {running_times}")
+    print(f"Average time: {running_times / len(img_paths)}")
