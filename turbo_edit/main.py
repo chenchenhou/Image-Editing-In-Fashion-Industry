@@ -191,8 +191,7 @@ def run(
     w1,
     num_timesteps,
     pipeline: StableDiffusionXLImg2ImgPipeline,
-    annotation_path,
-    label_to_class_id,
+    mask_path,
 ):
 
     generator = torch.Generator(device=SAMPLING_DEVICE).manual_seed(seed)
@@ -204,18 +203,18 @@ def run(
     image_np = np.array(x_0_image)
     image_height, image_width = image_np.shape[:2]
 
-    polygons = load_polygons(annotation_path, image_width, image_height)
-    if not polygons:
-        print(f"No polygons found in {annotation_path}. Skipping.")
-        return
-    target_class_ids = extract_target_class_ids(tgt_prompt, label_to_class_id)
+    # polygons = load_polygons(annotation_path, image_width, image_height)
+    # if not polygons:
+    #     print(f"No polygons found in {annotation_path}. Skipping.")
+    #     return
+    # target_class_ids = extract_target_class_ids(tgt_prompt, label_to_class_id)
 
-    mask_array = create_mask_from_polygons(
-        (image_width, image_height), polygons, target_class_ids
-    )
-    mask_image = Image.fromarray((mask_array * 255).astype(np.uint8))
-    mask_image.save(f"output/mask_{os.path.basename(image_path)}")
-    mask = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0).float().to(device)
+    # mask_array = create_mask_from_polygons(
+    #     (image_width, image_height), polygons, target_class_ids
+    # )
+    # mask_image = Image.fromarray((mask_array * 255).astype(np.uint8))
+    # mask_image.save(f"output/mask_{os.path.basename(image_path)}")
+    # mask = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0).float().to(device)
 
     x_0 = encode_image(x_0_image, pipeline, generator)
     # timestpes = [799, 599, 399, 199] in the case of 4 steps
@@ -230,11 +229,9 @@ def run(
         timesteps,
         x_0,
     )
-    # mask_image_raw = (
-    #     Image.open("dataset/mask.png")
-    #     .convert("RGB")
-    #     .resize((512, 512), RESIZE_TYPE)
-    # )
+    mask_image_raw = (
+        Image.open(mask_path).convert("RGB").resize((512, 512), RESIZE_TYPE)
+    )
     # mask_array = np.array(mask_image_raw)
     # print(np.max(mask_array))
     # print(np.min(mask_array))
@@ -250,8 +247,9 @@ def run(
     #     device=pipeline.device,
     #     do_classifier_free_guidance=False,
     # )
-    # mask = prepare_mask(mask_image_raw)
+    mask = prepare_mask(mask_image_raw)
     height, width = mask.shape[-2:]
+    # Make the mask same dimension as latent image
     mask = torch.nn.functional.interpolate(
         mask,
         size=(height // pipeline.vae_scale_factor, width // pipeline.vae_scale_factor),
@@ -352,6 +350,7 @@ if __name__ == "__main__":
     parser.add_argument("--timesteps", type=int, default=4)  # 3 or 4
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--data_pickle", type=str, default="../data/val.pkl")
+    parser.add_argument("--mask_dir", type=str, default="dataset/valid/masks")
 
     args = parser.parse_args()
 
@@ -360,17 +359,17 @@ if __name__ == "__main__":
     img_paths = [
         f"{eval_dataset_folder}/{img_name}" for img_name in img_paths_to_prompts.keys()
     ]
-    DATASET_DIR_PATH = "labeled_dataset"
-    if os.path.exists(DATASET_DIR_PATH):
-        shutil.rmtree(DATASET_DIR_PATH)
+    # DATASET_DIR_PATH = "labeled_dataset"
+    # if os.path.exists(DATASET_DIR_PATH):
+    #     shutil.rmtree(DATASET_DIR_PATH)
 
-    df = pd.read_pickle(args.data_pickle)
-    categories = set(df["category"].values)
-    cleaned_categories = {}
-    for c in categories:
-        if "&" in c:
-            c = c.split("&")[0].strip()
-        cleaned_categories[c] = c
+    # df = pd.read_pickle(args.data_pickle)
+    # categories = set(df["category"].values)
+    # cleaned_categories = {}
+    # for c in categories:
+    #     if "&" in c:
+    #         c = c.split("&")[0].strip()
+    #     cleaned_categories[c] = c
     # ontology = CaptionOntology(
     #     {
     #         "shirt": "shirt",
@@ -383,26 +382,26 @@ if __name__ == "__main__":
     #         "shoes": "shoes",
     #     }
     # )
-    ontology = CaptionOntology(cleaned_categories)
-    ontology_labels = [label for label, _ in ontology.promptMap]
+    # ontology = CaptionOntology(cleaned_categories)
+    # ontology_labels = [label for label, _ in ontology.promptMap]
 
-    label_to_class_id = {label: idx for idx, label in enumerate(ontology_labels)}
+    # label_to_class_id = {label: idx for idx, label in enumerate(ontology_labels)}
 
-    base_model = GroundedSAM(ontology)
-    IMAGE_DIR_PATH = os.path.join("dataset")
+    # base_model = GroundedSAM(ontology)
+    # IMAGE_DIR_PATH = os.path.join("dataset")
 
-    dataset = base_model.label(
-        input_folder=IMAGE_DIR_PATH,
-        extension=".jpg",
-        output_folder=DATASET_DIR_PATH,
-    )
+    # dataset = base_model.label(
+    #     input_folder=IMAGE_DIR_PATH,
+    #     extension=".jpg",
+    #     output_folder=DATASET_DIR_PATH,
+    # )
 
-    IMAGE_DIR_PATH = os.path.join(DATASET_DIR_PATH, "valid", "images")
-    ANNOTATIONS_DIR_PATH = os.path.join(DATASET_DIR_PATH, "valid", "labels")
-    img_paths = [
-        os.path.join(IMAGE_DIR_PATH, img_name)
-        for img_name in img_paths_to_prompts.keys()
-    ]
+    # IMAGE_DIR_PATH = os.path.join(DATASET_DIR_PATH, "valid", "images")
+    # ANNOTATIONS_DIR_PATH = os.path.join(DATASET_DIR_PATH, "valid", "labels")
+    # img_paths = [
+    #     os.path.join(IMAGE_DIR_PATH, img_name)
+    #     for img_name in img_paths_to_prompts.keys()
+    # ]
 
     pipeline = load_pipe(args.fp16, args.cache_dir)
     running_times = 0.0
@@ -410,9 +409,11 @@ if __name__ == "__main__":
         img_name = img_path.split("/")[-1]
         prompt = img_paths_to_prompts[img_name]["src_prompt"]
         edit_prompts = img_paths_to_prompts[img_name]["tgt_prompt"]
+        tgt_image_name = img_paths_to_prompts[img_name]["target_image"]
+        mask_path = os.path.join(args.mask_dir, tgt_image_name.replace("image", "mask"))
 
-        annotation_name = img_name.replace(".jpg", ".txt")
-        annotation_path = os.path.join(ANNOTATIONS_DIR_PATH, annotation_name)
+        # annotation_name = img_name.replace(".jpg", ".txt")
+        # annotation_path = os.path.join(ANNOTATIONS_DIR_PATH, annotation_name)
 
         res, diffusion_time = run(
             img_path,
@@ -422,8 +423,9 @@ if __name__ == "__main__":
             args.w,
             args.timesteps,
             pipeline=pipeline,
-            annotation_path=annotation_path,
-            label_to_class_id=label_to_class_id,
+            mask_path=mask_path,
+            # annotation_path=annotation_path,
+            # label_to_class_id=label_to_class_id,
         )
         running_times += diffusion_time
         os.makedirs(args.output_dir, exist_ok=True)
