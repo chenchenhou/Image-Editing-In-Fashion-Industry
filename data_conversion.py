@@ -7,7 +7,7 @@ import argparse
 from PIL import Image
 import json
 
-from sympy import im
+np.random.seed(0)
 
 
 def get_parser():
@@ -15,7 +15,7 @@ def get_parser():
     parser.add_argument(
         "--input_path",
         type=str,
-        default="data/train.pkl",
+        default="data/val.pkl",
         help="Path to the input pickle file",
     )
     parser.add_argument(
