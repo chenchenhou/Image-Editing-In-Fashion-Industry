@@ -117,9 +117,9 @@ def prepare_mask(
     else:
         # preprocess mask
         if isinstance(mask, (PIL.Image.Image, np.ndarray)):
-            mask = [mask]
+            mask = np.array(mask)
 
-        if isinstance(mask, list) and isinstance(mask[0], PIL.Image.Image):
+        elif isinstance(mask, list) and isinstance(mask[0], PIL.Image.Image):
             mask = np.concatenate(
                 [np.array(m.convert("L"))[None, None, :] for m in mask], axis=0
             )
@@ -132,6 +132,37 @@ def prepare_mask(
         mask = torch.from_numpy(mask)
 
     return mask
+
+
+def blur_mask(
+    mask: np.ndarray, blur_kernel_size: int = 15, dilation_iterations: int = 1
+) -> torch.Tensor:
+    """
+    Applies a blur to the edges of the mask with adjustable edge thickness.
+
+    :param mask: Input binary mask as a numpy array (values in [0, 255]).
+    :param blur_kernel_size: Size of the Gaussian blur kernel.
+    :param dilation_iterations: Number of iterations for edge dilation to control thickness.
+    :return: Blurred mask as a torch tensor scaled to [0, 1].
+    """
+    # Convert mask to binary (0 or 255)
+    binary_mask = (mask > 127).astype(np.uint8) * 255
+
+    # Find and dilate edges
+    edges = cv2.Canny(binary_mask, 100, 200)
+    dilated_edges = cv2.dilate(edges, None, iterations=dilation_iterations)
+
+    # Create a blurred mask
+    blurred_mask = cv2.GaussianBlur(binary_mask, (blur_kernel_size, blur_kernel_size), 0)
+
+    # Combine blurred edges with the original mask
+    result_mask = np.where(dilated_edges > 0, blurred_mask, binary_mask)
+
+    # Scale result back to [0, 1] and convert to torch tensor
+    result_mask = result_mask.astype(np.float32) / 255.0
+    result_mask = torch.tensor(result_mask, dtype=torch.float32)
+
+    return result_mask
 
 
 def set_pipeline(pipeline: StableDiffusionXLImg2ImgPipeline, num_timesteps, generator):
