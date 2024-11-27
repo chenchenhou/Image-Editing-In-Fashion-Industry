@@ -453,8 +453,6 @@ if __name__ == "__main__":
             args.timesteps,
             pipeline=pipeline,
             mask_path=mask_path,
-            # annotation_path=annotation_path,
-            # label_to_class_id=label_to_class_id,
         )
         running_times += diffusion_time
         os.makedirs(args.output_dir, exist_ok=True)
