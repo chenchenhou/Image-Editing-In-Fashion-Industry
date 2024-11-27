@@ -64,7 +64,7 @@ def encode_image(image, pipe, generator):
 
 def prepare_mask(
     mask: Union[PIL.Image.Image, np.ndarray, torch.Tensor]
-) -> torch.Tensor:
+) -> np.ndarray:
     """
     Prepares a mask to be consumed by the Stable Diffusion pipeline. This means that this input will be
     converted to ``torch.Tensor`` with shapes ``batch x channels x height x width`` where ``channels`` is ``1`` for
@@ -146,6 +146,7 @@ def blur_mask(
     :return: Blurred mask as a torch tensor scaled to [0, 1].
     """
     # Convert mask to binary (0 or 255)
+    mask = mask * 255
     binary_mask = (mask > 127).astype(np.uint8) * 255
 
     # Find and dilate edges
@@ -225,6 +226,9 @@ def run(
     num_timesteps,
     pipeline: StableDiffusionXLImg2ImgPipeline,
     mask_path,
+    blur = True,
+    blur_kernel_size = 15,
+    dilation_iterations = 1,
 ):
 
     generator = torch.Generator(device=SAMPLING_DEVICE).manual_seed(seed)
@@ -266,9 +270,11 @@ def run(
         Image.open(mask_path).convert("RGB").resize((512, 512), RESIZE_TYPE)
     )
     mask = prepare_mask(mask_image_raw)
-    mask = torch.from_numpy(mask)
-    # mask = blur_mask(mask)
-    # print(torch.max(mask))
+    if blur == True:
+        mask = blur_mask(mask, blur_kernel_size=blur_kernel_size, dilation_iterations=dilation_iterations)
+    else:
+        mask = torch.from_numpy(mask)
+
     height, width = mask.shape[-2:]
     # Make the mask same dimension as latent image
     mask = torch.nn.functional.interpolate(
