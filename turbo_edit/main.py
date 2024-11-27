@@ -153,7 +153,9 @@ def blur_mask(
     dilated_edges = cv2.dilate(edges, None, iterations=dilation_iterations)
 
     # Create a blurred mask
-    blurred_mask = cv2.GaussianBlur(binary_mask, (blur_kernel_size, blur_kernel_size), 0)
+    blurred_mask = cv2.GaussianBlur(
+        binary_mask, (blur_kernel_size, blur_kernel_size), 0
+    )
 
     # Combine blurred edges with the original mask
     result_mask = np.where(dilated_edges > 0, blurred_mask, binary_mask)
@@ -247,11 +249,11 @@ def run(
     # mask_image.save(f"output/mask_{os.path.basename(image_path)}")
     # mask = torch.from_numpy(mask_array).unsqueeze(0).unsqueeze(0).float().to(device)
 
-    x_0 = encode_image(x_0_image, pipeline, generator)
     # timestpes = [799, 599, 399, 199] in the case of 4 steps
     # x_0 = pipeline.image_processor.preprocess(x_0_image)
     # x_0 = x_0.to(device=pipeline.device, dtype=pipeline.dtype)
     # print(x_0.shape)
+    x_0 = encode_image(x_0_image, pipeline, generator)
     x_ts = create_xts(
         config.noise_shift_delta,
         config.noise_timesteps,
@@ -263,22 +265,6 @@ def run(
     mask_image_raw = (
         Image.open(mask_path).convert("RGB").resize((512, 512), RESIZE_TYPE)
     )
-    
-    # mask_array = np.array(mask_image_raw)
-    # print(np.max(mask_array))
-    # print(np.min(mask_array))
-    # mask_image = mask_pil_to_torch(mask_image_raw, 512, 512)
-    # mask_image, mask_latent = pipeline.prepare_mask_latents(
-    #     mask_image,
-    #     masked_image=None,
-    #     batch_size=3,
-    #     height=512,
-    #     width=512,
-    #     generator=generator,
-    #     dtype=pipeline.dtype,
-    #     device=pipeline.device,
-    #     do_classifier_free_guidance=False,
-    # )
     mask = prepare_mask(mask_image_raw)
     mask = torch.from_numpy(mask)
     # mask = blur_mask(mask)
@@ -377,7 +363,11 @@ def extract_target_class_ids(target_prompt, label_to_class_id):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache_dir", type=str, default=None)
-    parser.add_argument("--prompts_file", type=str, default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/dataset/dataset.json")
+    parser.add_argument(
+        "--prompts_file",
+        type=str,
+        default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/dataset/dataset.json",
+    )
     parser.set_defaults(fp16=False)
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--seed", type=int, default=2)
@@ -385,7 +375,11 @@ if __name__ == "__main__":
     parser.add_argument("--timesteps", type=int, default=4)  # 3 or 4
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--data_pickle", type=str, default="../data/val.pkl")
-    parser.add_argument("--mask_dir", type=str, default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/sam_output")
+    parser.add_argument(
+        "--mask_dir",
+        type=str,
+        default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/sam_output",
+    )
 
     args = parser.parse_args()
 
