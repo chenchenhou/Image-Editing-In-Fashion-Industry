@@ -11,7 +11,7 @@ import json
 
 
 IMAGE_DIR_PATH = "/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/data/val_images"
-SAM_OUTPUT_PATH = "/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/sam_output"
+SAM_OUTPUT_PATH = "/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/sam_output_src"
 df = pd.read_pickle("/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/data/val.pkl")
 json_file = "/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/dataset/val_turbo.json"
 
@@ -44,10 +44,11 @@ def save_segmentation_mask(results, output_path):
 images = os.listdir(IMAGE_DIR_PATH)
 
 for img, img_info in info.items():
-    target_img_name = img_info["target_image"]
-    tgt_img_idx = int(target_img_name[5:-4])
+    # target_img_name = img_info["target_image"]
+    # tgt_img_idx = int(target_img_name[5:-4])
+    src_img_idx = int(img[5:-4])
     img_path = os.path.join(IMAGE_DIR_PATH, img)
-    sample = df.iloc[tgt_img_idx-1]
+    sample = df.iloc[src_img_idx-1]
     category = sample["category"].lower()
     ontology = CaptionOntology(
         {
@@ -57,7 +58,7 @@ for img, img_info in info.items():
     base_model = GroundedSAM(ontology=ontology)
     results = base_model.predict(img_path)
     # print(results)
-    output_img_name = f"mask{tgt_img_idx}.jpg"
+    output_img_name = f"mask{src_img_idx}.jpg"
     output_path = os.path.join(SAM_OUTPUT_PATH, output_img_name)
     save_segmentation_mask(results, output_path)
 

@@ -117,9 +117,9 @@ def prepare_mask(
     else:
         # preprocess mask
         if isinstance(mask, (PIL.Image.Image, np.ndarray)):
-            mask = np.array(mask)
+            mask = [mask]
 
-        elif isinstance(mask, list) and isinstance(mask[0], PIL.Image.Image):
+        if isinstance(mask, list) and isinstance(mask[0], PIL.Image.Image):
             mask = np.concatenate(
                 [np.array(m.convert("L"))[None, None, :] for m in mask], axis=0
             )
@@ -129,7 +129,7 @@ def prepare_mask(
 
         mask[mask < 0.5] = 0
         mask[mask >= 0.5] = 1
-        mask = torch.from_numpy(mask)
+        # mask = torch.from_numpy(mask)
 
     return mask
 
@@ -263,6 +263,7 @@ def run(
     mask_image_raw = (
         Image.open(mask_path).convert("RGB").resize((512, 512), RESIZE_TYPE)
     )
+    
     # mask_array = np.array(mask_image_raw)
     # print(np.max(mask_array))
     # print(np.min(mask_array))
@@ -279,6 +280,9 @@ def run(
     #     do_classifier_free_guidance=False,
     # )
     mask = prepare_mask(mask_image_raw)
+    mask = torch.from_numpy(mask)
+    # mask = blur_mask(mask)
+    # print(torch.max(mask))
     height, width = mask.shape[-2:]
     # Make the mask same dimension as latent image
     mask = torch.nn.functional.interpolate(
@@ -373,7 +377,7 @@ def extract_target_class_ids(target_prompt, label_to_class_id):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache_dir", type=str, default=None)
-    parser.add_argument("--prompts_file", type=str, default="")
+    parser.add_argument("--prompts_file", type=str, default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/dataset/dataset.json")
     parser.set_defaults(fp16=False)
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--seed", type=int, default=2)
@@ -381,7 +385,7 @@ if __name__ == "__main__":
     parser.add_argument("--timesteps", type=int, default=4)  # 3 or 4
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--data_pickle", type=str, default="../data/val.pkl")
-    parser.add_argument("--mask_dir", type=str, default="dataset/valid/masks")
+    parser.add_argument("--mask_dir", type=str, default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/sam_output")
 
     args = parser.parse_args()
 
