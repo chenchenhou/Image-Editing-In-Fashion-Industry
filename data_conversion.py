@@ -1,4 +1,3 @@
-from email.mime import image
 import numpy as np
 import pandas as pd
 import matplotlib.pyplot as plt
@@ -6,8 +5,12 @@ import os
 import argparse
 from PIL import Image
 import json
+import random
+
+from sympy import rad
 
 np.random.seed(0)
+random.seed(0)
 
 
 def get_parser():
@@ -54,11 +57,17 @@ df = pd.read_pickle(input_path)
 data_for_finetuning = []
 data_for_image_editing = {}
 
+cat_df = {cat: group for cat, group in df.groupby("category")}
+
 for idx, row in df.iterrows():
     print(f"Processing {idx+1}/{len(df)}")
-    target_idx = np.random.randint(0, len(df))
-    while target_idx == idx:
-        target_idx = np.random.randint(0, len(df))
+    subdf = cat_df[row["category"]]
+    target_idx = random.choice(subdf.index)
+    if len(subdf) == 1:
+        target_idx = idx
+    else:
+        while target_idx == idx:
+            target_idx = random.choice(subdf.index)
     src_image_array = row["image"]
     src_description = row["final_description"]
 
