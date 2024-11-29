@@ -375,7 +375,7 @@ if __name__ == "__main__":
     parser.add_argument("--seed", type=int, default=2)
     parser.add_argument("--w", type=float, default=1.5)
     parser.add_argument("--timesteps", type=int, default=4)  # 3 or 4
-    parser.add_argument("--output_dir", type=str, default="output")
+    parser.add_argument("--output_dir", type=str, default="output_matched")
     parser.add_argument("--data_pickle", type=str, default="../data/val.pkl")
     parser.add_argument("--mask_dir", type=str, default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/sam_output_src")
 
@@ -449,11 +449,12 @@ if __name__ == "__main__":
 
         # annotation_name = img_name.replace(".jpg", ".txt")
         # annotation_path = os.path.join(ANNOTATIONS_DIR_PATH, annotation_name)
+        # print(edit_prompts[0])
 
         res, diffusion_time = run(
             img_path,
             prompt,
-            edit_prompts[0],
+            edit_prompts,
             args.seed,
             args.w,
             args.timesteps,

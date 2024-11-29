@@ -72,6 +72,7 @@ for idx, row in df.iterrows():
     src_description = row["final_description"]
 
     target_description = df.iloc[target_idx]["description"]
+    target_description = target_description.split(".")[0]
     target_image_array = df.iloc[target_idx]["image"]
 
     if src_image_array.dtype != np.uint8:
