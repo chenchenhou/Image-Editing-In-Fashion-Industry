@@ -369,11 +369,7 @@ def extract_target_class_ids(target_prompt, label_to_class_id):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--cache_dir", type=str, default=None)
-    parser.add_argument(
-        "--prompts_file",
-        type=str,
-        default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/dataset/dataset.json",
-    )
+    parser.add_argument("--prompts_file", type=str, default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/dataset/val_turbo.json")
     parser.set_defaults(fp16=False)
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--seed", type=int, default=2)
@@ -381,19 +377,20 @@ if __name__ == "__main__":
     parser.add_argument("--timesteps", type=int, default=4)  # 3 or 4
     parser.add_argument("--output_dir", type=str, default="output")
     parser.add_argument("--data_pickle", type=str, default="../data/val.pkl")
-    parser.add_argument(
-        "--mask_dir",
-        type=str,
-        default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/sam_output",
-    )
+    parser.add_argument("--mask_dir", type=str, default="/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/turbo_edit/sam_output_src")
 
     args = parser.parse_args()
 
     img_paths_to_prompts = json.load(open(args.prompts_file, "r"))
     eval_dataset_folder = "/".join(args.prompts_file.split("/")[:-1]) + "/"
+    # img_paths = [
+    #     f"{eval_dataset_folder}/{img_name}" for img_name in img_paths_to_prompts.keys()
+    # ]
     img_paths = [
-        f"{eval_dataset_folder}/{img_name}" for img_name in img_paths_to_prompts.keys()
+    f"/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/data/val_images/{img_name}"
+    for img_name in img_paths_to_prompts.keys()
     ]
+
     # DATASET_DIR_PATH = "labeled_dataset"
     # if os.path.exists(DATASET_DIR_PATH):
     #     shutil.rmtree(DATASET_DIR_PATH)
@@ -441,11 +438,14 @@ if __name__ == "__main__":
     pipeline = load_pipe(args.fp16, args.cache_dir)
     running_times = 0.0
     for i, img_path in enumerate(img_paths):
-        img_name = img_path.split("/")[-1]
+        # img_name = img_path.split("/")[-1]
+        img_name = os.path.basename(img_path)
         prompt = img_paths_to_prompts[img_name]["src_prompt"]
         edit_prompts = img_paths_to_prompts[img_name]["tgt_prompt"]
         tgt_image_name = img_paths_to_prompts[img_name]["target_image"]
-        mask_path = os.path.join(args.mask_dir, tgt_image_name.replace("image", "mask"))
+        # mask_path = os.path.join(args.mask_dir, tgt_image_name.replace("image", "mask"))
+        mask_path = os.path.join(args.mask_dir, f"mask{i+1}.jpg")
+
 
         # annotation_name = img_name.replace(".jpg", ".txt")
         # annotation_path = os.path.join(ANNOTATIONS_DIR_PATH, annotation_name)
@@ -459,10 +459,12 @@ if __name__ == "__main__":
             args.timesteps,
             pipeline=pipeline,
             mask_path=mask_path,
+            # annotation_path=annotation_path,
+            # label_to_class_id=label_to_class_id,
         )
         running_times += diffusion_time
         os.makedirs(args.output_dir, exist_ok=True)
-        res.save(f"{args.output_dir}/output_{i}.png")
+        res.save(f"{args.output_dir}/output_{i+1}.png")
 
     print(f"Total time: {running_times}")
     print(f"Average time: {running_times / len(img_paths)}")
