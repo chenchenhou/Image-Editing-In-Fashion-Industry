@@ -150,7 +150,7 @@ def step_save_latents(
     z_t = x_t_minus_1 - u_hat_t
     self.latents.append(z_t)
 
-    max_norm_zs = [-1 for i in range(11)] + [15.5]
+    max_norm_zs = [-1 for i in range(self._config.num_steps_inversion)] + [15.5]
 
     # z_t, _ = normalize(z_t, timestep_index, self._config.max_norm_zs)
     z_t, _ = normalize(z_t, timestep_index, max_norm_zs)
@@ -175,7 +175,7 @@ def step_use_latents(
     next_timestep_index = timestep_index + 1
     z_t = self.latents[next_timestep_index]  # + 1 because latents[0] is X_T
 
-    max_norm_zs = [-1 for i in range(11)] + [15.5]
+    max_norm_zs = [-1 for i in range(self._config.num_steps_inversion)] + [15.5]
 
     _, normalize_coefficient = normalize(
         z_t,
