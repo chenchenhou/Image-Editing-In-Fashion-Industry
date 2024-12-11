@@ -1,7 +1,5 @@
 import os
 import cv2
-from matplotlib import category
-import pip
 from diffusers import AutoPipelineForImage2Image
 from diffusers import DDPMScheduler
 from diffusers.pipelines.stable_diffusion_xl.pipeline_stable_diffusion_xl_inpaint import (
@@ -26,18 +24,17 @@ from config import get_config
 import argparse
 from diffusers.utils import load_image
 from torchvision.transforms.functional import to_pil_image
-from typing import Any, Callable, Dict, List, Optional, Union
+from typing import Any, Dict, List, Union
 from PIL import Image, ImageDraw
 import numpy as np
 from autodistill_grounded_sam import GroundedSAM
 from autodistill.detection import CaptionOntology
-import shutil
 import pandas as pd
 import time
 
 
-VAE_SAMPLE = "argmax"  # "argmax" or "sample"
-RESIZE_TYPE = None  # Image.LANCZOS
+VAE_SAMPLE = "argmax"  
+RESIZE_TYPE = None  
 
 
 def encode_image(image, pipe, generator):
@@ -91,29 +88,22 @@ def prepare_mask(mask: Union[PIL.Image.Image, np.ndarray, torch.Tensor]) -> np.n
                 f"`image` is a torch.Tensor but `mask` (type: {type(mask)} is not"
             )
 
-        # Batch and add channel dim for single mask
         if mask.ndim == 2:
             mask = mask.unsqueeze(0).unsqueeze(0)
 
-        # Batch single mask or add channel dim
         if mask.ndim == 3:
-            # Single batched mask, no channel dim or single mask not batched but channel dim
             if mask.shape[0] == 1:
                 mask = mask.unsqueeze(0)
 
-            # Batched masks no channel dim
             else:
                 mask = mask.unsqueeze(1)
 
-        # Check mask is in [0, 1]
         if mask.min() < 0 or mask.max() > 1:
             raise ValueError("Mask should be in [0, 1] range")
 
-        # Binarize mask
         mask[mask < 0.5] = 0
         mask[mask >= 0.5] = 1
     else:
-        # preprocess mask
         if isinstance(mask, (PIL.Image.Image, np.ndarray)):
             mask = [mask]
 
@@ -127,7 +117,6 @@ def prepare_mask(mask: Union[PIL.Image.Image, np.ndarray, torch.Tensor]) -> np.n
 
         mask[mask < 0.5] = 0
         mask[mask >= 0.5] = 1
-        # mask = torch.from_numpy(mask)
 
     return mask
 
@@ -143,23 +132,18 @@ def blur_mask(
     :param dilation_iterations: Number of iterations for edge dilation to control thickness.
     :return: Blurred mask as a torch tensor scaled to [0, 1].
     """
-    # Convert mask to binary (0 or 255)
     mask = mask * 255
     binary_mask = (mask > 127).astype(np.uint8) * 255
 
-    # Find and dilate edges
     edges = cv2.Canny(binary_mask, 100, 200)
     dilated_edges = cv2.dilate(edges, None, iterations=dilation_iterations)
 
-    # Create a blurred mask
     blurred_mask = cv2.GaussianBlur(
         binary_mask, (blur_kernel_size, blur_kernel_size), 0
     )
 
-    # Combine blurred edges with the original mask
     result_mask = np.where(dilated_edges > 0, blurred_mask, binary_mask)
 
-    # Scale result back to [0, 1] and convert to torch tensor
     result_mask = result_mask.astype(np.float32) / 255.0
     result_mask = torch.tensor(result_mask, dtype=torch.float32)
 
@@ -177,16 +161,16 @@ def set_pipeline(pipeline: StableDiffusionXLImg2ImgPipeline, num_timesteps, gene
     config = get_config(config_from_file)
     if config.timesteps is None:
 
-        denoising_start = config.step_start / config.num_steps_inversion  # 1/5
+        denoising_start = config.step_start / config.num_steps_inversion  
         timesteps, num_inference_steps = retrieve_timesteps(
             pipeline.scheduler, config.num_steps_inversion, device, None
-        )  # tensor([999, 799, 599, 399, 199], device='cuda:0')
+        )  
         timesteps, num_inference_steps = pipeline.get_timesteps(
             num_inference_steps=num_inference_steps,
             device=device,
             denoising_start=denoising_start,
             strength=0,
-        )  # tensor([799, 599, 399, 199], device='cuda:0')
+        ) 
         timesteps = timesteps.type(torch.int64)
         pipeline.__call__ = partial(
             pipeline.__call__,
@@ -209,7 +193,7 @@ def set_pipeline(pipeline: StableDiffusionXLImg2ImgPipeline, num_timesteps, gene
             strength=1,
         )
         pipeline.scheduler.set_timesteps(
-            timesteps=config.timesteps,  # device=pipeline.device
+            timesteps=config.timesteps,  
         )
     timesteps = [torch.tensor(t) for t in timesteps.tolist()]
     return timesteps, config
@@ -261,7 +245,6 @@ def run(
         mask = torch.from_numpy(mask)
 
     height, width = mask.shape[-2:]
-    # Make the mask same dimension as latent image
     mask = torch.nn.functional.interpolate(
         mask,
         size=(height // pipeline.vae_scale_factor, width // pipeline.vae_scale_factor),
@@ -323,7 +306,6 @@ def load_polygons(annotation_path, image_width, image_height):
             if len(parts) > 2:
                 class_id = int(parts[0])
                 coords = list(map(float, parts[1:]))
-                # Group coordinates into (x, y) pairs
                 polygon = []
                 for i in range(0, len(coords), 2):
                     x = int(coords[i] * image_width)
@@ -334,7 +316,7 @@ def load_polygons(annotation_path, image_width, image_height):
 
 
 def create_mask_from_polygons(image_size, polygons, target_class_ids):
-    mask = Image.new("L", image_size, 0)  # Create a blank mask image
+    mask = Image.new("L", image_size, 0)  
     draw = ImageDraw.Draw(mask)
     for class_id, polygon in polygons:
         if class_id in target_class_ids:
@@ -376,9 +358,7 @@ if __name__ == "__main__":
 
     img_paths_to_prompts = json.load(open(args.prompts_file, "r"))
     eval_dataset_folder = "/".join(args.prompts_file.split("/")[:-1]) + "/"
-    # img_paths = [
-    #     f"{eval_dataset_folder}/{img_name}" for img_name in img_paths_to_prompts.keys()
-    # ]
+
     img_paths = [
         f"/home/mmpug/revanth/Image-Editing-In-Fashion-Industry/data/val_images/{img_name}"
         for img_name in img_paths_to_prompts.keys()

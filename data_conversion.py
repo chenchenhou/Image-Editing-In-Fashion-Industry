@@ -1,17 +1,13 @@
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 import os
 import argparse
 from PIL import Image
 import json
 import random
 
-from sympy import rad
-
 np.random.seed(0)
 random.seed(0)
-
 
 def get_parser():
     parser = argparse.ArgumentParser(description="Data Converting")
@@ -40,7 +36,6 @@ def get_parser():
         help="Path to the output json file for image editing",
     )
     return parser
-
 
 parser = get_parser()
 args = parser.parse_args()
@@ -105,15 +100,6 @@ for idx, row in df.iterrows():
         "target_image": target_image_filename,
         "tgt_prompt": target_description,
     }
-    # data_for_image_editing.append(
-    #     {
-    #         src_image_filename: {
-    #             "src_prompt": src_description,
-    #             "target_image": target_image_filename,
-    #             "tgt_prompt": target_description,
-    #         }
-    #     }
-    # )
 
 with open(output_finetune_json_path, "w", encoding="utf-8") as f:
     json.dump(data_for_finetuning, f, indent=4)

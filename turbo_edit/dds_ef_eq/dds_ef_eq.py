@@ -1,11 +1,9 @@
 from diffusers.schedulers import (
     DDPMScheduler,
 )
-
 from typing import Tuple, Union, Optional, List
 import argparse
 import jsonc as json
-
 import torch
 from diffusers import StableDiffusionPipeline, UNet2DConditionModel
 import numpy as np
@@ -118,7 +116,7 @@ class DDSLoss:
 
         e_t_guidance = (
             e_t_uncond + torch.mul(guidance_scale, (e_t - e_t_uncond).T).T
-        )  # x.permute(*torch.arange(x.ndim - 1, -1, -1))
+        )  
 
         assert torch.isfinite(e_t_guidance).all()
         if get_raw:
@@ -272,7 +270,7 @@ def image_optimization(
             ) ** 0.5
             current_alpha_t = (
                 alpha_prod_t / alpha_prod_t_prev
-            )  # NOTE: current_alpha_t is different than pipe.scheduler.alphas[timestep] since we are not using 1000 inference timesteps
+            )  
             lr_t = (1 - current_alpha_t) / (sqrt_alpha_prod * sqrt_one_minus_alpha_prod)
             lr = lr_t
 

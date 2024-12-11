@@ -2,10 +2,8 @@ from typing import Optional, Union
 import torch
 from diffusers.schedulers.scheduling_ddim import DDIMSchedulerOutput
 
-SAMPLING_DEVICE = "cpu"  # "cuda"
-
+SAMPLING_DEVICE = "cpu"  
 device = "cuda" if torch.cuda.is_available() else "cpu"
-
 
 def deterministic_ddpm_step(
     model_output: torch.FloatTensor,
@@ -182,14 +180,6 @@ def step_use_latents(
         timestep_index,
         max_norm_zs,
     )
-
-    # _, normalize_coefficient = normalize(
-    #     z_t,
-    #     timestep_index,
-    #     self._config.max_norm_zs,
-    # )
-
-    # u(x_t_hat_c_hat) -> this is the edited image with novel prompt (edit_image with tgt prompt)
     x_t_hat_c_hat = deterministic_ddpm_step(
         model_output=model_output,
         timestep=timestep,
@@ -203,13 +193,13 @@ def step_use_latents(
 
     x_t_c_predicted: torch.Tensor = self.x_ts_c_predicted[
         next_timestep_index
-    ]  # x_ts_c_predicted stores u_hat_t
+    ]  
 
     x_t_c = x_t_c_predicted[0].expand_as(x_t_hat_c_hat)
 
     edit_prompts_num = (
         model_output.size(0) // 2
-    )  # model_output -> (3, 4, 64, 64) -> edit_prompts_num = 1
+    )  
     x_t_hat_c_indices = (
         0,
         edit_prompts_num,
@@ -218,7 +208,7 @@ def step_use_latents(
         edit_prompts_num,
         (model_output.size(0)),
     )
-    x_t_hat_c = torch.zeros_like(x_t_hat_c_hat)  # (3, 4, 64, 64)
+    x_t_hat_c = torch.zeros_like(x_t_hat_c_hat)  
     x_t_hat_c[edit_images_indices[0] : edit_images_indices[1]] = x_t_hat_c_hat[
         x_t_hat_c_indices[0] : x_t_hat_c_indices[1]
     ]
@@ -233,7 +223,7 @@ def step_use_latents(
 
     x_t_minus_1_hat[x_t_hat_c_indices[0] : x_t_hat_c_indices[1]] = x_t_minus_1_hat[
         edit_images_indices[0] : edit_images_indices[1]
-    ]  # update x_t_hat_c to be x_t_hat_c_hat
+    ]  
 
     if not return_dict:
         return (x_t_minus_1_hat,)
@@ -242,7 +232,6 @@ def step_use_latents(
         prev_sample=x_t_minus_1_hat,
         pred_original_sample=None,
     )
-
 
 def get_ddpm_inversion_scheduler(
     scheduler,
@@ -291,7 +280,6 @@ def get_ddpm_inversion_scheduler(
     scheduler.step = step
     return scheduler
 
-
 def create_xts(
     noise_shift_delta,
     noise_timesteps,
@@ -303,21 +291,20 @@ def create_xts(
     if noise_timesteps is None:
         noising_delta = noise_shift_delta * (
             timesteps[0] - timesteps[1]
-        )  # noising_delta = 799 - 599 = 200
+        )  
         noise_timesteps = [
             timestep - int(noising_delta) for timestep in timesteps
-        ]  # [599, 399, 199, -1]
+        ]  
 
-    first_x_0_idx = len(noise_timesteps)  # 4
+    first_x_0_idx = len(noise_timesteps)  
     for i in range(len(noise_timesteps)):
         if noise_timesteps[i] <= 0:
-            first_x_0_idx = i  # fist_x_0_idx = 3
+            first_x_0_idx = i
             break
 
-    noise_timesteps = noise_timesteps[:first_x_0_idx]  # [599, 399, 199]
+    noise_timesteps = noise_timesteps[:first_x_0_idx]  
 
-    # x0 -> (1, 4, 64, 64)
-    x_0_expanded = x_0.expand(len(noise_timesteps), -1, -1, -1)  # (3, 4, 64, 64)
+    x_0_expanded = x_0.expand(len(noise_timesteps), -1, -1, -1)  
     noise = torch.randn(
         x_0_expanded.size(), generator=generator, device=SAMPLING_DEVICE
     ).to(x_0.device)
@@ -326,10 +313,10 @@ def create_xts(
         x_0_expanded,
         noise,
         torch.IntTensor(noise_timesteps),
-    )  # (3, 4, 64, 64)
+    )  
     x_ts = [
         t.unsqueeze(dim=0) for t in list(x_ts)
-    ]  # each x_t has shape (1, 4, 64, 64) correspond to x_t at time t = [599, 399, 199]
-    x_ts += [x_0] * (len(timesteps) - first_x_0_idx)  # [x_3, x_2, x_1, x_0]
-    x_ts += [x_0]  # [x_3, x_2, x_1, x_0, x_0]
+    ]  
+    x_ts += [x_0] * (len(timesteps) - first_x_0_idx)  
+    x_ts += [x_0]  
     return x_ts

@@ -21,10 +21,6 @@ def get_config(config_path):
         if isinstance(cfg.max_norm_zs, (int, float)):
             cfg.max_norm_zs = [cfg.max_norm_zs] * num_steps_actual
 
-    # assert (
-    #     len(cfg.max_norm_zs) == num_steps_actual
-    # ), f"len(cfg.max_norm_zs) ({len(cfg.max_norm_zs)}) != num_steps_actual ({num_steps_actual})"
-
     assert cfg.noise_timesteps is None or len(cfg.noise_timesteps) == (
         num_steps_actual
     ), f"len(cfg.noise_timesteps) ({len(cfg.noise_timesteps)}) != num_steps_actual ({num_steps_actual})"

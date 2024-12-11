@@ -1,15 +1,7 @@
-from ast import arg
 from html import parser
-from re import sub
 import h5py
-import numpy as np
-import matplotlib.pyplot as plt
 import pandas as pd
 import argparse
-from PIL import Image
-import io
-import os
-
 
 def get_parser():
     parser = argparse.ArgumentParser(description="Data Preprocessing")
@@ -26,7 +18,6 @@ def get_parser():
         help="Path to the output pickle file",
     )
     return parser
-
 
 parser = get_parser()
 args = parser.parse_args()
@@ -71,7 +62,6 @@ df["sub_category"] = sub_categories
 df["category"] = categories
 df["image"] = image
 
-# Transform each pose to a more human-readable format
 df["pose"] = df["pose"].apply(
     lambda x: (
         b"front pose"
@@ -80,7 +70,6 @@ df["pose"] = df["pose"].apply(
     )
 )
 
-# Create a new column with the final description
 df["final_description"] = (
     df["pose"]
     + b" of "

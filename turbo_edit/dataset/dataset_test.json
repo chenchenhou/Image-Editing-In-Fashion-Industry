@@ -1,8 +1,0 @@
-{
-  "image1.jpg": {
-    "src_prompt": "front pose of shirts for men. long sleeve coated denim shirt in indigo blue. irregular overdye effect throughout in black. spread collar. flap pockets at breast, one with metallic logo piece. press-stud closure at front. tonal stitching. three press-studs at barrel cuffs.",
-    "tgt_prompt": [
-      "short sleeve cotton jersey t-shirt in black. graphic printed in white throughout. rib knit crewneck collar. tonal stitching."
-    ]
-  }
-}
